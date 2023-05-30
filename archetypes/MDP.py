@@ -1,0 +1,7 @@
+C_CLIENT = b'0'
+W_WORKER = b'1'
+W_REQUEST = b'2'
+W_READY = b'3'
+W_REPLY = b'4'
+W_HEARTBEAT = b'5'
+W_DISCONNECT = b'6'
