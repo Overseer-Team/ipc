@@ -10,8 +10,8 @@ from typing import Callable, Any
 import zmq
 import zmq.asyncio
 
-from archetypes import MDP
-from archetypes.errors import InvalidHeader
+from models import MDP
+from models.errors import InvalidHeader
 
 log = logging.getLogger('broker')
 
@@ -223,7 +223,7 @@ class SetupLogging:
         self.stream: bool = stream
 
     def __enter__(self):
-        self.log.setLevel(logging.INFO)
+        self.log.setLevel(logging.DEBUG)
         handler = RotatingFileHandler(
             filename=self.logging_path / "broker.log", encoding="utf-8", mode="w", maxBytes=self.max_bytes, backupCount=5
         )
