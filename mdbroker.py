@@ -10,7 +10,7 @@ from typing import Callable, Any
 import zmq
 import zmq.asyncio
 
-from models import MDP
+from models import mdp
 from models.errors import InvalidHeader
 
 log = logging.getLogger('broker')
@@ -78,9 +78,9 @@ class MDBroker:
                 assert empty == b''
                 header = msg.pop(0)
 
-                if MDP.C_CLIENT == header:
+                if mdp.C_CLIENT == header:
                     await self.process_client(sender, msg)
-                elif MDP.W_WORKER == header:
+                elif mdp.W_WORKER == header:
                     await self.process_worker(sender, msg)
                 else:
                     raise InvalidHeader(f'Message received with invalid header value of {header}; must be 0 or 1.')
@@ -91,7 +91,7 @@ class MDBroker:
     async def send_heartbeats(self):
         if time.time() > self.heartbeat_at:
             for worker in self.waiting:
-                await self.send_to_worker(worker, MDP.W_HEARTBEAT, None, None)
+                await self.send_to_worker(worker, mdp.W_HEARTBEAT, None, None)
 
             self.heartbeat_at = time.time() + 1e-3*self.HEARTBEAT_INTERVAL
 
@@ -108,7 +108,7 @@ class MDBroker:
     async def delete_worker(self, worker: Worker, disconnect: bool):
         """Deletes worker from all data structures, and deletes worker."""
         if disconnect:
-            await self.send_to_worker(worker, MDP.W_DISCONNECT, None, None)
+            await self.send_to_worker(worker, mdp.W_DISCONNECT, None, None)
 
         if worker.service is not None:
             worker.service.waiting.remove(worker)
@@ -137,7 +137,7 @@ class MDBroker:
 
         if option is not None:
             msg = [option] + msg
-        msg = [worker.address, b'', MDP.W_WORKER, command] + msg
+        msg = [worker.address, b'', mdp.W_WORKER, command] + msg
 
         log.debug('Sending %r to worker', command)
         self.socket.send_multipart(msg)
@@ -151,7 +151,7 @@ class MDBroker:
             msg = service.requests.pop(0)
             worker = service.waiting.pop(0)
             self.waiting.remove(worker)
-            await self.send_to_worker(worker, MDP.W_REQUEST, None, msg)
+            await self.send_to_worker(worker, mdp.W_REQUEST, None, msg)
 
     async def process_client(self, sender, msg):
         """Processes a request coming from a client"""
@@ -178,27 +178,27 @@ class MDBroker:
         worker_ready = hexlify(sender) in self.workers
         worker = self.require_worker(sender)
 
-        if MDP.W_READY == command:
+        if mdp.W_READY == command:
             service = msg.pop(0)
             if worker_ready or service.startswith(self.INTERNAL_SERVICE_PREFIX):
                 await self.delete_worker(worker, True)
             else:
                 worker.service = self.require_service(service)
                 await self.worker_waiting(worker)
-        elif MDP.W_REPLY == command:
+        elif mdp.W_REPLY == command:
             if worker_ready:
                 client = msg.pop(0)
-                msg = [client, b'', MDP.C_CLIENT, worker.service.name] + msg
+                msg = [client, b'', mdp.C_CLIENT, worker.service.name] + msg
                 await self.socket.send_multipart(msg)
                 await self.worker_waiting(worker)
             else:
                 await self.delete_worker(worker, True)
-        elif MDP.W_HEARTBEAT == command:
+        elif mdp.W_HEARTBEAT == command:
             if worker_ready:
                 worker.expiry = time.time() + 1e-3*self.HEARTBEAT_EXPIRY
             else:
                 await self.delete_worker(worker, True)
-        elif MDP.W_DISCONNECT == command:
+        elif mdp.W_DISCONNECT == command:
             await self.delete_worker(worker, False)
         else:
             raise InvalidHeader(f'Command does not match any existing worker actions: {command}')
@@ -211,7 +211,7 @@ class MDBroker:
 
     def bind(self, endpoint: str):
         self.socket.bind(endpoint)
-        log.info('MDP broker/0.1.1 is active at %s', endpoint)
+        log.info('mdp broker/0.1.1 is active at %s', endpoint)
 
 
 class SetupLogging:
@@ -223,7 +223,7 @@ class SetupLogging:
         self.stream: bool = stream
 
     def __enter__(self):
-        self.log.setLevel(logging.DEBUG)
+        self.log.setLevel(logging.INFO)
         handler = RotatingFileHandler(
             filename=self.logging_path / "broker.log", encoding="utf-8", mode="w", maxBytes=self.max_bytes, backupCount=5
         )
