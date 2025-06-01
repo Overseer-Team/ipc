@@ -4,7 +4,7 @@ import logging
 import pathlib
 from logging.handlers import RotatingFileHandler
 from binascii import hexlify
-from typing import Callable, Any
+from typing import Any
 
 import zmq
 import zmq.asyncio
@@ -32,15 +32,6 @@ class Worker:
         self.expiry = time.time() + 1e-3*lifetime
 
 
-def route(name: str | None = None):
-    def decorator(func: Callable):
-        MDBroker.ROUTES[name or func.__name__] = func
-
-        return func
-
-    return decorator
-
-
 class MDBroker:
     INTERNAL_SERVICE_PREFIX = b"mmi."
     HEARTBEAT_LIVENESS = 3  # 3-5 is reasonable
@@ -48,7 +39,8 @@ class MDBroker:
     HEARTBEAT_EXPIRY = HEARTBEAT_INTERVAL + HEARTBEAT_LIVENESS
     ROUTES: dict[str, Any] = {}
 
-    def __init__(self):
+    def __init__(self, host: str, port: int):
+        self.endpoint = f'tcp://{host}:{port}'
         self.heartbeat_at = time.time() + 1e-3*self.HEARTBEAT_INTERVAL
         self.ctx = zmq.asyncio.Context()
         self.socket = self.ctx.socket(zmq.ROUTER)
@@ -60,32 +52,74 @@ class MDBroker:
         self.waiting = []
 
     async def mediate(self):
+        errors = 0
+        max_errors = 3
+
         while True:
             try:
                 items = self.poller.poll(self.HEARTBEAT_INTERVAL)
+
+                if items:
+                    msg = await self.socket.recv_multipart()
+                    log.debug('Received message %s', msg)
+
+                    # ZMQ ROUTER prepends a unique identifier for the sender for every send
+                    # this is followed by a null byte: b''
+                    sender = msg.pop(0)
+                    empty = msg.pop(0)
+                    assert empty == b''
+                    header = msg.pop(0)
+
+                    if mdp.C_CLIENT == header:
+                        await self.process_client(sender, msg)
+                    elif mdp.W_WORKER == header:
+                        await self.process_worker(sender, msg)
+                    else:
+                        raise InvalidHeader(f'Message received with invalid header value of {header}; must be 0 or 1.')
             except KeyboardInterrupt:
                 break
+            except zmq.ZMQError as e:
+                errors += 1
+                if errors >= max_errors:
+                    log.critical(f"ZMQ error threshold reached after {errors} attempts: {e}")
+                    break
+                
+                wait_time = min(2 ** errors, 30)  # exponential backoff, max 30s
+                log.exception(f"ZMQ error (attempt {errors}/{max_errors}), retrying in {wait_time}s: {e}")
+                await asyncio.sleep(wait_time)
+                
+                if e.errno in (zmq.ETERM, zmq.ENOTSOCK):
+                    await self._recreate_socket()
+            except InvalidHeader:
+                log.warning('Received unknown header with no associated worker: %s', header)  # pyright: ignore[reportPossiblyUnboundVariable] 
+            except Exception:
+                if errors >= max_errors:
+                    log.critical(f"Error threshold reached after {errors} attempts", exc_info=True)
+                    break
+                    
+                wait_time = min(2 ** errors, 30)
+                log.exception(f"Unexpected error (attempt {errors}/{max_errors}), retrying in {wait_time}s")
+                await asyncio.sleep(wait_time)
+            else:
+                errors = 0
 
-            if items:
-                msg = await self.socket.recv_multipart()
-                log.debug('Received message %s', msg)
+            try:
+                await self.purge_workers()
+                await self.send_heartbeats()
+            except Exception as e:
+                log.error(f"Error in maintenance tasks: {e}")
 
-                # ZMQ ROUTER prepends a unique identifier for the sender for every send
-                # this is followed by a null byte: b''
-                sender = msg.pop(0)
-                empty = msg.pop(0)
-                assert empty == b''
-                header = msg.pop(0)
-
-                if mdp.C_CLIENT == header:
-                    await self.process_client(sender, msg)
-                elif mdp.W_WORKER == header:
-                    await self.process_worker(sender, msg)
-                else:
-                    raise InvalidHeader(f'Message received with invalid header value of {header}; must be 0 or 1.')
-
-            await self.purge_workers()
-            await self.send_heartbeats()
+    async def _recreate_socket(self):
+        log.info('Recreating socket')
+        
+        self.poller.unregister(self.socket)
+        self.socket.close()
+        
+        self.socket = self.ctx.socket(zmq.ROUTER)
+        self.socket.linger = 0
+        self.socket.bind(self.endpoint)  # store endpoint in __init__
+        
+        self.poller.register(self.socket, zmq.POLLIN)
 
     async def send_heartbeats(self):
         if time.time() > self.heartbeat_at:
@@ -208,9 +242,9 @@ class MDBroker:
         worker.expiry = time.time() + 1e-3*self.HEARTBEAT_EXPIRY
         await self.dispatch(worker.service, None)
 
-    def bind(self, endpoint: str):
-        self.socket.bind(endpoint)
-        log.info('mdp broker/0.1.1 is active at %s', endpoint)
+    def bind(self):
+        self.socket.bind(self.endpoint)
+        log.info('MDP broker is active at %s', self.endpoint)
 
 
 class SetupLogging:
@@ -247,6 +281,6 @@ class SetupLogging:
 
 if __name__ == '__main__':
     with SetupLogging():
-        broker = MDBroker()
-        broker.bind('tcp://0.0.0.0:5555')
+        broker = MDBroker(host='0.0.0.0', port=5555)
+        broker.bind()
         asyncio.run(broker.mediate())
