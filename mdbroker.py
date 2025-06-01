@@ -2,7 +2,6 @@ import asyncio
 import time
 import logging
 import pathlib
-import sys
 from logging.handlers import RotatingFileHandler
 from binascii import hexlify
 from typing import Callable, Any
@@ -25,7 +24,7 @@ class Service:
 
 class Worker:
     """An idle or active worker"""
-    service = None  # Owning service, if known
+    service = None
 
     def __init__(self, identity: bytes, address: str, lifetime: int):
         self.identity = identity
@@ -247,10 +246,7 @@ class SetupLogging:
 
 
 if __name__ == '__main__':
-    if sys.platform == 'win32':
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
     with SetupLogging():
         broker = MDBroker()
-        broker.bind('tcp://*:5555')
+        broker.bind('tcp://0.0.0.0:5555')
         asyncio.run(broker.mediate())
