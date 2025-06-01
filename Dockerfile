@@ -18,7 +18,7 @@ RUN apt update \
     gnutls-dev \
     libmagic-dev
 
-RUN curl -sSL https://install.python-poetry.org | python -
+RUN pip install -U pdm
 
 WORKDIR /main
 COPY pdm.lock pyproject.toml ./
