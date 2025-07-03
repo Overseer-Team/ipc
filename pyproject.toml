@@ -1,5 +1,5 @@
 [project]
-name = "mdp_broker"
+name = "ipc"
 version = "0.1.0"
 description = "Asynchronous implementation of the Majordomo broker"
 authors = [
@@ -12,6 +12,15 @@ dependencies = [
 requires-python = "<4.0,>=3.10"
 readme = "README.md"
 license = {text = "MIT"}
+
+[project.optional-dependencies]
+broker = []
+client = []
+worker = [
+    "discord-py>=2.5.2",
+]
+all = ["ipc[broker,worker,client]"]
+
 
 [tool.pdm]
 distribution = false

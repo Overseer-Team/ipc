@@ -1,4 +1,5 @@
 import asyncio
+import os
 import time
 import logging
 import pathlib
@@ -9,10 +10,10 @@ from typing import Any
 import zmq
 import zmq.asyncio
 
-from models import mdp
-from models.errors import InvalidHeader
+from ..core.models import mdp
+from ..core.models.errors import InvalidHeader
 
-log = logging.getLogger('broker')
+log = logging.getLogger('ipc.broker')
 
 
 class Service:
@@ -155,7 +156,7 @@ class MDBroker:
         while self.waiting:
             w = self.waiting[0]
             if w.expiry < time.time():
-                logging.info("Deleting expired worker: %s", w.identity)
+                log.debug("Deleting expired worker: %s", w.identity)
                 await self.delete_worker(w, False)
                 self.waiting.pop(0)
             else:
@@ -201,7 +202,7 @@ class MDBroker:
         if worker is None:
             worker = Worker(identity, address, self.HEARTBEAT_EXPIRY)
             self.workers[identity] = worker
-            log.info('Registered a new worker: %s', identity)
+            log.debug('Registered a new worker: %s', identity)
 
         return worker
 
@@ -281,6 +282,6 @@ class SetupLogging:
 
 if __name__ == '__main__':
     with SetupLogging():
-        broker = MDBroker(host='0.0.0.0', port=5555)
+        broker = MDBroker(host=os.getenv('BROKER_HOST', '127.0.0.1'), port=int(os.getenv('BROKER_PORT', 5555)))
         broker.bind()
         asyncio.run(broker.mediate())
