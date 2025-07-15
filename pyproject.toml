@@ -14,20 +14,20 @@ readme = "README.md"
 license = {text = "MIT"}
 
 [project.optional-dependencies]
-broker = []
-client = []
 worker = [
     "discord-py>=2.5.2",
 ]
-all = ["ipc[broker,worker,client]"]
+all = ["ipc[worker]"]
 
 
 [tool.pdm]
 distribution = false
 
 [tool.pdm.build]
-includes = []
+includes = ["src/"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pdm.dev-dependencies]
 dev = []
-

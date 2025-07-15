@@ -19,6 +19,7 @@ RUN apt update \
     libmagic-dev
 
 RUN pip install -U pdm
+RUN pdm config python.use_venv False
 
 WORKDIR /main
 COPY pdm.lock pyproject.toml ./
@@ -26,4 +27,4 @@ COPY pdm.lock pyproject.toml ./
 RUN pdm install --check --prod --no-editable
 
 COPY . .
-ENTRYPOINT pdm run python -OO mdbroker.py
+ENTRYPOINT pdm run python -OO -m src.broker

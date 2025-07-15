@@ -6,17 +6,9 @@ import zmq
 import zmq.asyncio
 import msgpack
 
+from ..core.models.mdp import C_CLIENT
+
 log = logging.getLogger('ipc.client')
-
-
-class MDP:
-    C_CLIENT = b'0'
-    W_WORKER = b'1'
-    W_REQUEST = b'2'
-    W_READY = b'3'
-    W_REPLY = b'4'
-    W_HEARTBEAT = b'5'
-    W_DISCONNECT = b'6'
 
 
 class MDClient:
@@ -54,7 +46,7 @@ class MDClient:
 
         if isinstance(service, str):
             service = service.encode()
-        request = [MDP.C_CLIENT, service] + [msgpack.packb(request, use_bin_type=True)]
+        request = [C_CLIENT, service] + [msgpack.packb(request, use_bin_type=True)]
 
         async with self.lock:
             retries = 1
@@ -72,7 +64,7 @@ class MDClient:
 
                     assert len(msg) >= 3
                     header = msg.pop(0)
-                    assert MDP.C_CLIENT == header
+                    assert C_CLIENT == header
                     reply_service = msg.pop(0)
                     assert service == reply_service
 
