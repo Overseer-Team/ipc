@@ -31,10 +31,10 @@ The broker is single‑process, asynchronous and **stateless** - after a restart
 ## Installation
 
 ```bash
-pip install git+https://github.com/Overseer-Team/mdp_broker
+pip install git+https://github.com/Overseer-Team/ipc
 
 # optional worker deps (ie discord.py=*)
-pip install git+https://github.com/Overseer-Team/mdp_broker#egg=mdp_broker[worker]
+pip install git+https://github.com/Overseer-Team/ipc#egg=ipc[worker]
 ```
 
 > **Note** The package is not published on PyPI. Installation is done purely via git.
@@ -64,7 +64,7 @@ The broker writes logs to stdout and a rotating log at `./logs/broker.log`.
 services:
   broker:
     container_name: broker
-    build: https://github.com/Overseer-Team/mdp_broker.git
+    build: https://github.com/Overseer-Team/ipc.git
     restart: unless-stopped
     environment:
       - BROKER_HOST=0.0.0.0
