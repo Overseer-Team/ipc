@@ -15,9 +15,8 @@ license = {text = "MIT"}
 
 [project.optional-dependencies]
 worker = [
-    "discord-py>=2.5.2",
+    "discord-py",
 ]
-all = ["ipc[worker]"]
 
 [tool.pdm]
 distribution = false
