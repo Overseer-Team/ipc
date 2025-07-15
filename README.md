@@ -1,6 +1,6 @@
 # IPC - Asynchronous Majordomo Broker
 
-A **Python 3.10+** implementation of the Majordomo pattern¹ built on **ZeroMQ** and **MsgPack**. The codebase is organised into three lightweight packages:
+A **Python 3.10+** implementation of the Majordomo pattern¹ built on **ZeroMQ**. The codebase is organised into three lightweight packages:
 
 | Package    | Purpose                                     | Import root  | Extras marker |
 | ---------- | ------------------------------------------- | ------------ | ------------- |
