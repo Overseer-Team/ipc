@@ -282,6 +282,6 @@ class SetupLogging:
 
 if __name__ == '__main__':
     with SetupLogging():
-        broker = MDBroker(host=os.getenv('BROKER_HOST', '127.0.0.1'), port=int(os.getenv('BROKER_PORT', 5555)))
+        broker = MDBroker(host=os.getenv('BROKER_HOST', '0.0.0.0'), port=int(os.getenv('BROKER_PORT', 5555)))
         broker.bind()
         asyncio.run(broker.mediate())
