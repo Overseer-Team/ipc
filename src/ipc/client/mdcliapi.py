@@ -8,6 +8,7 @@ import msgpack
 
 from ..core.models.mdp import C_CLIENT
 
+__all__ = ('MDClient', )
 log = logging.getLogger('ipc.client')
 
 

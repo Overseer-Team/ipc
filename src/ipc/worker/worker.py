@@ -9,6 +9,7 @@ from .mdwrkapi import MDWorker
 if TYPE_CHECKING:
     from discord.ext.commands import Bot
 
+__all__ = ('route', 'IPC')
 log = logging.getLogger('ipc.worker')
 
 
@@ -21,7 +22,7 @@ def route(name: str | None = None):
     return decorator
 
 
-async def worker(service_name: str, broker_ip: str, broker_port: int, bot: Bot, func: Callable, *, log_level=logging.INFO):
+async def _worker(service_name: str, broker_ip: str, broker_port: int, bot: Bot, func: Callable, *, log_level=logging.INFO):
     worker_ = MDWorker(service_name.encode(), broker_ip, broker_port, log_level=log_level)
     await worker_.connect_to_broker()
 
@@ -49,6 +50,6 @@ class IPC:
 
     async def start(self):
         for route, func in self.ROUTES.items():
-            task = asyncio.create_task(worker(route, self.ip, self.port, self.bot, func), name=f'ipc__{route}')
+            task = asyncio.create_task(_worker(route, self.ip, self.port, self.bot, func), name=f'ipc__{route}')
             task.add_done_callback(log_errors)
             self.tasks.add(task)
