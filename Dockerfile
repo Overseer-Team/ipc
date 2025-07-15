@@ -27,4 +27,4 @@ COPY pdm.lock pyproject.toml ./
 RUN pdm install --check --prod --no-editable
 
 COPY . .
-ENTRYPOINT pdm run python -OO -m src.broker
+ENTRYPOINT pdm run python -OO -m src.ipc.broker
