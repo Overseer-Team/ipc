@@ -122,18 +122,15 @@ Workers send heartbeats every `HEARTBEAT = 2500 ms` and reconnect automatically 
 
 Invalid frames raise `InvalidHeader`.
 
----
 
 ## Contributing
 
 - Don't, unless you know what you're doing.
 
----
 
 ## Licence
 
 This project is released under the MIT License.
 
----
 
 ¹ Majordomo Protocol, Pieter Hintjens.
