@@ -23,10 +23,10 @@ all = ["ipc[worker]"]
 distribution = false
 
 [tool.pdm.build]
-includes = ["ipc/"]
+includes = ["src/"]
 
 [tool.setuptools.packages.find]
-where = ["ipc/"]
+where = ["src/"]
 
 [tool.pdm.dev-dependencies]
 dev = []
