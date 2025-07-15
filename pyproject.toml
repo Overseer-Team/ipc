@@ -19,15 +19,14 @@ worker = [
 ]
 all = ["ipc[worker]"]
 
-
 [tool.pdm]
 distribution = false
 
 [tool.pdm.build]
-includes = ["src/"]
+includes = ["ipc/"]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["ipc/"]
 
 [tool.pdm.dev-dependencies]
 dev = []
