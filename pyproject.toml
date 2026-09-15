@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "ipc"
 version = "0.1.0"
@@ -11,7 +15,7 @@ dependencies = [
 ]
 requires-python = "<4.0,>=3.10"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 
 [project.optional-dependencies]
 worker = [
@@ -27,5 +31,23 @@ includes = ["src/"]
 [tool.setuptools.packages.find]
 where = ["src/"]
 
-[tool.pdm.dev-dependencies]
-dev = []
+[tool.setuptools.package-data]
+ipc = ["py.typed"]
+
+[dependency-groups]
+dev = ["ruff>=0.12.0", "pyright>=1.1.403"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 125
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.pyright]
+include = ["src", "tests/typing_routes.py"]
+pythonVersion = "3.10"
+typeCheckingMode = "strict"
