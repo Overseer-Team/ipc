@@ -1,11 +1,14 @@
+from __future__ import annotations
+
 import asyncio
+import logging
 import os
 import time
-import logging
-import pathlib
-from logging.handlers import RotatingFileHandler
 from binascii import hexlify
-from typing import Any
+from collections import OrderedDict, deque
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+from types import TracebackType
 
 import zmq
 import zmq.asyncio
@@ -13,275 +16,292 @@ import zmq.asyncio
 from ..core.models import mdp
 from ..core.models.errors import InvalidHeader
 
-log = logging.getLogger('ipc.broker')
+log: logging.Logger = logging.getLogger('ipc.broker')
 
 
 class Service:
-    def __init__(self, name: str):
+    def __init__(self, name: bytes) -> None:
         self.name = name
-        self.requests = []
-        self.waiting = []
+        self.requests: deque[list[bytes]] = deque()
+        self.waiting: OrderedDict[bytes, Worker] = OrderedDict()
 
 
 class Worker:
-    """An idle or active worker"""
-    service = None
+    """An idle or active worker; identity is the hex-encoded ROUTER address."""
 
-    def __init__(self, identity: bytes, address: str, lifetime: int):
+    def __init__(self, identity: bytes, address: bytes, lifetime: int) -> None:
         self.identity = identity
         self.address = address
-        self.expiry = time.time() + 1e-3*lifetime
+        self.service: Service | None = None
+        self.busy = False
+        self.expiry: float = time.time() + lifetime / 1000
 
 
 class MDBroker:
-    INTERNAL_SERVICE_PREFIX = b"mmi."
-    HEARTBEAT_LIVENESS = 3  # 3-5 is reasonable
-    HEARTBEAT_INTERVAL = 2500
-    HEARTBEAT_EXPIRY = HEARTBEAT_INTERVAL + HEARTBEAT_LIVENESS
-    ROUTES: dict[str, Any] = {}
+    INTERNAL_SERVICE_PREFIX: bytes = b'mmi.'
+    HEARTBEAT_LIVENESS: int = 3
+    HEARTBEAT_INTERVAL: int = 2500
+    # Deployment-sensitive legacy timing: change separately with broker validation.
+    HEARTBEAT_EXPIRY: int = HEARTBEAT_INTERVAL + HEARTBEAT_LIVENESS
 
-    def __init__(self, host: str, port: int):
-        self.endpoint = f'tcp://{host}:{port}'
-        self.heartbeat_at = time.time() + 1e-3*self.HEARTBEAT_INTERVAL
-        self.ctx = zmq.asyncio.Context()
-        self.socket = self.ctx.socket(zmq.ROUTER)
+    def __init__(self, host: str, port: int) -> None:
+        self.endpoint: str = f'tcp://{host}:{port}'
+        self.heartbeat_at: float = time.time() + self.HEARTBEAT_INTERVAL / 1000
+        self.ctx: zmq.asyncio.Context = zmq.asyncio.Context()
+        self.socket: zmq.asyncio.Socket = self.ctx.socket(zmq.ROUTER)
         self.socket.linger = 0
-        self.poller = zmq.asyncio.Poller()
+        self.poller: zmq.asyncio.Poller = zmq.asyncio.Poller()
         self.poller.register(self.socket, zmq.POLLIN)
-        self.services: dict[str, Service] = {}
+        self.services: dict[bytes, Service] = {}
         self.workers: dict[bytes, Worker] = {}
-        self.waiting = []
+        self.waiting: OrderedDict[bytes, Worker] = OrderedDict()
 
-    async def mediate(self):
+    async def mediate(self) -> None:
         errors = 0
         max_errors = 3
-
         while True:
             try:
+                # Intentionally preserve the current traffic-driven maintenance
+                # cadence. Awaiting this poll is a separate broker timing change.
                 items = self.poller.poll(self.HEARTBEAT_INTERVAL)
-
                 if items:
                     msg = await self.socket.recv_multipart()
-                    log.debug('Received message %s', msg)
-
-                    # ZMQ ROUTER prepends a unique identifier for the sender for every send
-                    # this is followed by a null byte: b''
-                    sender = msg.pop(0)
-                    empty = msg.pop(0)
-                    assert empty == b''
-                    header = msg.pop(0)
-
-                    if mdp.C_CLIENT == header:
-                        await self.process_client(sender, msg)
-                    elif mdp.W_WORKER == header:
-                        await self.process_worker(sender, msg)
+                    if len(msg) < 3 or msg[1] != b'':
+                        raise InvalidHeader('Invalid broker envelope')
+                    sender, _, header, *body = msg
+                    if header == mdp.C_CLIENT:
+                        await self.process_client(sender, body)
+                    elif header == mdp.W_WORKER:
+                        await self.process_worker(sender, body)
                     else:
-                        raise InvalidHeader(f'Message received with invalid header value of {header}; must be 0 or 1.')
-            except KeyboardInterrupt:
-                break
-            except zmq.ZMQError as e:
+                        raise InvalidHeader(f'Unknown protocol header: {header!r}')
+            except zmq.ZMQError as exc:
                 errors += 1
                 if errors >= max_errors:
-                    log.critical(f"ZMQ error threshold reached after {errors} attempts: {e}")
-                    break
-                
-                wait_time = min(2 ** errors, 30)  # exponential backoff, max 30s
-                log.exception(f"ZMQ error (attempt {errors}/{max_errors}), retrying in {wait_time}s: {e}")
+                    log.critical('ZMQ error threshold reached after %s attempts', errors, exc_info=True)
+                    raise
+                wait_time = min(2**errors, 30)
+                log.exception('ZMQ error (attempt %s/%s), retrying in %ss', errors, max_errors, wait_time)
                 await asyncio.sleep(wait_time)
-                
-                if e.errno in (zmq.ETERM, zmq.ENOTSOCK):
+                if exc.errno in (zmq.ETERM, zmq.ENOTSOCK):
                     await self._recreate_socket()
-            except InvalidHeader:
-                log.warning('Received unknown header with no associated worker: %s', header)  # pyright: ignore[reportPossiblyUnboundVariable] 
+            except InvalidHeader as exc:
+                # Malformed peer input must not disable validation under python -OO
+                # or force all other peers through the exception backoff.
+                log.warning('Rejected message: %s', exc)
             except Exception:
+                errors += 1
                 if errors >= max_errors:
-                    log.critical(f"Error threshold reached after {errors} attempts", exc_info=True)
-                    break
-                    
-                wait_time = min(2 ** errors, 30)
-                log.exception(f"Unexpected error (attempt {errors}/{max_errors}), retrying in {wait_time}s")
+                    log.critical('Error threshold reached after %s attempts', errors, exc_info=True)
+                    raise
+                wait_time = min(2**errors, 30)
+                log.exception('Unexpected error (attempt %s/%s), retrying in %ss', errors, max_errors, wait_time)
                 await asyncio.sleep(wait_time)
             else:
                 errors = 0
 
-            try:
-                await self.purge_workers()
-                await self.send_heartbeats()
-            except Exception as e:
-                log.error(f"Error in maintenance tasks: {e}")
+            await self.purge_workers()
+            await self.send_heartbeats()
 
-    async def _recreate_socket(self):
+    async def _recreate_socket(self) -> None:
         log.info('Recreating socket')
-        
         self.poller.unregister(self.socket)
-        self.socket.close()
-        
+        self.socket.close(linger=0)
+        if self.ctx.closed:
+            self.ctx = zmq.asyncio.Context()
         self.socket = self.ctx.socket(zmq.ROUTER)
         self.socket.linger = 0
-        self.socket.bind(self.endpoint)  # store endpoint in __init__
-        
+        self.socket.bind(self.endpoint)
         self.poller.register(self.socket, zmq.POLLIN)
+        # A new ROUTER cannot rely on the old connection/worker inventory.
+        self.workers.clear()
+        self.waiting.clear()
+        for service in self.services.values():
+            service.waiting.clear()
 
-    async def send_heartbeats(self):
+    async def send_heartbeats(self) -> None:
         if time.time() > self.heartbeat_at:
-            for worker in self.waiting:
+            for worker in self.waiting.values():
                 await self.send_to_worker(worker, mdp.W_HEARTBEAT, None, None)
+            self.heartbeat_at = time.time() + self.HEARTBEAT_INTERVAL / 1000
 
-            self.heartbeat_at = time.time() + 1e-3*self.HEARTBEAT_INTERVAL
-
-    def require_service(self, name: str):
-        """Locates a service (or creates one if necessary)"""
-        assert name is not None
+    def require_service(self, name: bytes) -> Service:
         service = self.services.get(name)
         if service is None:
             service = Service(name)
             self.services[name] = service
-
         return service
 
-    async def delete_worker(self, worker: Worker, disconnect: bool):
-        """Deletes worker from all data structures, and deletes worker."""
+    async def delete_worker(self, worker: Worker, disconnect: bool) -> None:
         if disconnect:
             await self.send_to_worker(worker, mdp.W_DISCONNECT, None, None)
-
+        self.waiting.pop(worker.identity, None)
         if worker.service is not None:
-            worker.service.waiting.remove(worker)
-        self.workers.pop(worker.identity)
+            worker.service.waiting.pop(worker.identity, None)
+        self.workers.pop(worker.identity, None)
 
-    async def purge_workers(self):
-        """Look for and kill expired workers.
-
-        Workers are oldest to most recent, so we stop at the first alive worker.
-        """
+    async def purge_workers(self) -> None:
+        """Preserve oldest-first expiry checks and stop at the first live worker."""
         while self.waiting:
-            w = self.waiting[0]
-            if w.expiry < time.time():
-                log.debug("Deleting expired worker: %s", w.identity)
-                await self.delete_worker(w, False)
-                self.waiting.pop(0)
-            else:
+            worker = next(iter(self.waiting.values()))
+            if worker.expiry >= time.time():
                 break
+            log.debug('Deleting expired worker: %s', worker.identity)
+            await self.delete_worker(worker, False)
 
-    async def send_to_worker(self, worker: Worker, command: Any | None, option: Any | None, msg):
-        """Sends a message to a worker"""
-        if msg is None:
-            msg = []
-        elif not isinstance(msg, list):
-            msg = [msg]
-
+    async def send_to_worker(
+        self, worker: Worker, command: bytes, option: bytes | None, msg: list[bytes] | bytes | None
+    ) -> None:
+        frames = [worker.address, b'', mdp.W_WORKER, command]
         if option is not None:
-            msg = [option] + msg
-        msg = [worker.address, b'', mdp.W_WORKER, command] + msg
+            frames.append(option)
+        if isinstance(msg, bytes):
+            frames.append(msg)
+        elif msg is not None:
+            frames.extend(msg)
+        # Preserve the legacy enqueue-without-await behavior in this review.
+        # PyZMQ's annotation omits the element type of Sequence.
+        self.socket.send_multipart(frames)  # pyright: ignore[reportUnknownMemberType]
 
-        log.debug('Sending %r to worker', command)
-        self.socket.send_multipart(msg)
-
-    async def dispatch(self, service: Service, msg):
+    async def dispatch(self, service: Service, msg: list[bytes] | None) -> None:
         if msg is not None:
             service.requests.append(msg)
-
         await self.purge_workers()
         while service.waiting and service.requests:
-            msg = service.requests.pop(0)
-            worker = service.waiting.pop(0)
-            self.waiting.remove(worker)
-            await self.send_to_worker(worker, mdp.W_REQUEST, None, msg)
+            request = service.requests.popleft()
+            _, worker = service.waiting.popitem(last=False)
+            self.waiting.pop(worker.identity, None)
+            worker.busy = True
+            await self.send_to_worker(worker, mdp.W_REQUEST, None, request)
 
-    async def process_client(self, sender, msg):
-        """Processes a request coming from a client"""
-        assert len(msg) >= 2
-        service = msg.pop(0)
-        msg = [sender, b''] + msg
+    async def process_client(self, sender: bytes, msg: list[bytes]) -> None:
+        if len(msg) < 2:
+            raise InvalidHeader('Client request requires a service and payload')
+        service, *payload = msg
+        await self.dispatch(self.require_service(service), [sender, b'', *payload])
 
-        await self.dispatch(self.require_service(service), msg)
-
-    def require_worker(self, address):
-        """Locates a worker (or creates one if necessary)"""
+    def require_worker(self, address: bytes) -> Worker:
         identity = hexlify(address)
         worker = self.workers.get(identity)
         if worker is None:
             worker = Worker(identity, address, self.HEARTBEAT_EXPIRY)
             self.workers[identity] = worker
             log.debug('Registered a new worker: %s', identity)
-
         return worker
 
-    async def process_worker(self, sender, msg):
-        """Processes a message sent from a worker"""
-        command = msg.pop(0)
+    async def process_worker(self, sender: bytes, msg: list[bytes]) -> None:
+        if not msg:
+            raise InvalidHeader('Worker message requires a command')
+        command, *body = msg
+        if command == mdp.W_READY:
+            valid = len(body) == 1
+        elif command == mdp.W_REPLY:
+            valid = len(body) >= 3 and body[1] == b''
+        elif command in (mdp.W_HEARTBEAT, mdp.W_DISCONNECT):
+            valid = not body
+        else:
+            raise InvalidHeader(f'Unknown worker command: {command!r}')
+        if not valid:
+            raise InvalidHeader(f'Invalid envelope for worker command: {command!r}')
+
         worker_ready = hexlify(sender) in self.workers
         worker = self.require_worker(sender)
-
-        if mdp.W_READY == command:
-            service = msg.pop(0)
+        if command == mdp.W_READY:
+            service = body[0]
             if worker_ready or service.startswith(self.INTERNAL_SERVICE_PREFIX):
                 await self.delete_worker(worker, True)
             else:
                 worker.service = self.require_service(service)
                 await self.worker_waiting(worker)
-        elif mdp.W_REPLY == command:
-            if worker_ready:
-                client = msg.pop(0)
-                msg = [client, b'', mdp.C_CLIENT, worker.service.name] + msg
-                await self.socket.send_multipart(msg)
+        elif command == mdp.W_REPLY:
+            if worker_ready and worker.service is not None and worker.busy:
+                client, *payload = body
+                await self.socket.send_multipart(  # pyright: ignore[reportUnknownMemberType]
+                    [client, b'', mdp.C_CLIENT, worker.service.name, *payload]
+                )
                 await self.worker_waiting(worker)
             else:
                 await self.delete_worker(worker, True)
-        elif mdp.W_HEARTBEAT == command:
+        elif command == mdp.W_HEARTBEAT:
             if worker_ready:
-                worker.expiry = time.time() + 1e-3*self.HEARTBEAT_EXPIRY
+                worker.expiry = time.time() + self.HEARTBEAT_EXPIRY / 1000
+                # Keep the idle list ordered by expiry, or purge_workers stops early
+                # at this refreshed worker and never reaches expired ones behind it.
+                if worker.identity in self.waiting:
+                    self.waiting.move_to_end(worker.identity)
             else:
                 await self.delete_worker(worker, True)
-        elif mdp.W_DISCONNECT == command:
+        else:  # W_DISCONNECT
             await self.delete_worker(worker, False)
-        else:
-            raise InvalidHeader(f'Command does not match any existing worker actions: {command}')
 
-    async def worker_waiting(self, worker: Worker):
-        self.waiting.append(worker)
-        worker.service.waiting.append(worker)
-        worker.expiry = time.time() + 1e-3*self.HEARTBEAT_EXPIRY
+    async def worker_waiting(self, worker: Worker) -> None:
+        if worker.service is None:
+            raise InvalidHeader('Worker has not registered a service')
+        worker.busy = False
+        self.waiting[worker.identity] = worker
+        worker.service.waiting[worker.identity] = worker
+        worker.expiry = time.time() + self.HEARTBEAT_EXPIRY / 1000
         await self.dispatch(worker.service, None)
 
-    def bind(self):
+    def bind(self) -> None:
         self.socket.bind(self.endpoint)
         log.info('MDP broker is active at %s', self.endpoint)
+
+    def close(self) -> None:
+        """Release the broker socket and context after mediate() has stopped."""
+        if not self.socket.closed:
+            self.poller.unregister(self.socket)
+            self.socket.close(linger=0)
+        self.ctx.term()
 
 
 class SetupLogging:
     def __init__(self, *, stream: bool = True) -> None:
         self.log: logging.Logger = logging.getLogger()
-        self.max_bytes: int = 32 * 1024
-        self.logging_path = pathlib.Path("./logs/")
-        self.logging_path.mkdir(exist_ok=True)
-        self.stream: bool = stream
+        self.max_bytes = 32 * 1024
+        self.logging_path: Path = Path('./logs/')
+        self.stream = stream
+        self.handlers: list[logging.Handler] = []
+        self.previous_level: int = self.log.level
 
-    def __enter__(self):
+    def __enter__(self) -> SetupLogging:
+        self.logging_path.mkdir(exist_ok=True)
+        self.previous_level = self.log.level
         self.log.setLevel(logging.INFO)
         handler = RotatingFileHandler(
-            filename=self.logging_path / "broker.log", encoding="utf-8", mode="w", maxBytes=self.max_bytes, backupCount=5
+            filename=self.logging_path / 'broker.log', encoding='utf-8', maxBytes=self.max_bytes, backupCount=5
         )
-        dt_fmt = "%Y-%m-%d %H:%M:%S"
-        fmt = logging.Formatter("[{asctime}] [{levelname}] {name}: {message}", dt_fmt, style="{")
-        handler.setFormatter(fmt)
-        self.log.addHandler(handler)
-
+        self.handlers = [handler]
         if self.stream:
-            stream_handler = logging.StreamHandler()
-            stream_handler.setFormatter(fmt)
-            self.log.addHandler(stream_handler)
-
+            self.handlers.append(logging.StreamHandler())
+        fmt = logging.Formatter('[{asctime}] [{levelname}] {name}: {message}', '%Y-%m-%d %H:%M:%S', style='{')
+        for handler in self.handlers:
+            handler.setFormatter(fmt)
+            self.log.addHandler(handler)
         return self
 
-    def __exit__(self, *args: Any) -> None:
-        handlers = self.log.handlers[:]
-        for hdlr in handlers:
-            hdlr.close()
-            self.log.removeHandler(hdlr)
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, traceback: TracebackType | None
+    ) -> None:
+        for handler in self.handlers:
+            self.log.removeHandler(handler)
+            handler.close()
+        self.handlers.clear()
+        self.log.setLevel(self.previous_level)
+
+
+async def main() -> None:
+    broker = MDBroker(host=os.getenv('BROKER_HOST', '127.0.0.1'), port=int(os.getenv('BROKER_PORT', '5555')))
+    try:
+        broker.bind()
+        await broker.mediate()
+    finally:
+        broker.close()
 
 
 if __name__ == '__main__':
     with SetupLogging():
-        broker = MDBroker(host=os.getenv('BROKER_HOST', '127.0.0.1'), port=int(os.getenv('BROKER_PORT', 5555)))
-        broker.bind()
-        asyncio.run(broker.mediate())
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            pass
