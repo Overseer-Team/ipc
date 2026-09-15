@@ -1,12 +1,17 @@
+from __future__ import annotations
+
+
 class MDPError(Exception):
-    pass
+    """Base class for transport protocol errors."""
 
 
 class InvalidHeader(MDPError):
-    """Raised when the header doesn't refer to a client or a worker"""
-    pass
+    """A message has an invalid envelope or command."""
+
+
+class InvalidPayload(MDPError):
+    """A request or reply body cannot be decoded as MessagePack."""
 
 
 class WorkerNotConnected(MDPError):
-    """Raised when the worker hasn't yet connected to the broker"""
-    pass
+    """The worker has not connected to the broker."""
